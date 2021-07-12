@@ -1,0 +1,1866 @@
+'************************************************************************
+'Copyright (c) 2016 - OpenMotics <info@openmotics.com>
+
+'This file is part of OpenMotics.
+
+'OpenMotics is free software: you can redistribute it and/or modify
+'it under the terms of the GNU General Public License as published by
+'the Free Software Foundation, either version 3 of the License, or
+'(at your option) any later version.
+
+'OpenMotics is distributed in the hope that it will be useful,
+'but WITHOUT ANY WARRANTY; without even the implied warranty of
+'MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+'GNU General Public License for more details.
+
+'You should have received a copy of the GNU General Public License
+'along with OpenMotics.  If not, see <http://www.gnu.org/licenses/>.
+'************************************************************************
+
+'Firmware to be used with the OpenMotics 8 ports Dim Control (0-10V) Module
+
+'Written in Pic Basic Pro 2.6 however it should be compatible with Pic Basic Pro 3.0 but this is not yet tested
+'Interrupt system of Darrel Taylor is used see http://darreltaylor.com/DT_INTS-18/home.html
+'For more information see wiki.openmotics.com
+
+'ONLY WORKS WITH GEN3 HW !!!
+
+@ CONFIG SOSCSEL=DIG
+
+DEFINE          OSC                 40
+
+version         con                 6
+firmware        con                 0
+built           con                 15
+
+hardware        con                 4
+
+Buffer          con                 180
+
+DEFINE          USE_LOWPRIORITY     1
+define          NO_CLRWDT           1   ; No automatic clear watchdog timer
+
+INCLUDE "DT_INTS-18.bas"                ; Base Interrupt System
+INCLUDE "ReEnterPBP-18.bas"             ; Include if using PBP interrupts
+INCLUDE "ReEnterPBP-18LP.bas"           ; Include if using Low Pr. PBP INTS
+
+'OSCCON.0=0 'external oscillator
+'OSCCON.1=0
+'OSCTUNE.6=1 'PLL enabled
+
+CLEARWDT
+
+ANCON0=%00000000   'All ports configured as digital ports
+ANCON1=%00000000   'All ports configured as digital ports
+
+CCP2CON=0
+
+'i2c --------------------------------------------------------------------------
+SSPADD=99         '100kHZ
+'SSPADD=24         '400kHZ
+SSPCON1=%00101000 'turn on MSSP and set for master mode i2c 
+
+'uart--------------------------------------------------------------------------
+RS485_mode              var    PORTD.4        ' Mode for RS485 chip (send or receive)
+output RS485_mode
+low RS485_mode
+input PORTC.7
+output PORTC.6
+BAUDCON1.5=0 'receive data is not inverted
+BAUDCON1.3=1 'BRG16=1
+BAUDCON1.4=0 'idle state for Txd is 1
+SPBRGH1 = 0  '115200 baud
+SPBRG1 = 86
+RCSTA1 = %00010000
+TXSTA1 = %00000100
+BAUDCON2.5=0 'receive data is not inverted
+BAUDCON2.3=1 'BRG16=1
+BAUDCON2.4=0 'idle state for Txd is 1
+SPBRGH2 = 0  '115200 baud
+SPBRG2 = 86
+RCSTA2 = %00010000
+TXSTA2 = %00000100
+
+'pause 400
+
+'Variables
+
+Mod_ID0                 var     byte
+Mod_ID1                 var     byte
+Mod_ID2                 var     byte
+Mod_ID3                 var     byte
+Mod_NE                  var     byte        'N->New module,E->Existing module,P-> Preprogrammed
+
+test_bit                var     bit
+j                       var     byte
+x                       var     byte
+y                       var     byte
+z                       var     byte
+q                       var     byte
+r                       var     byte
+s                       var     byte
+s1                      var     byte
+s2                      var     byte
+t                       var     byte
+i                       var     byte
+w1                      var     word
+tmp                     var     byte[8]
+test                    var     byte
+reset_count             var     word
+reset_count=0
+Out                     var     byte
+Out=0
+dimmer                  var     byte[8]
+OutAlert                var     byte
+OutAlertCounter         var     word
+OutAlertDouble          var     bit
+OutAlertUpdate          var     bit
+OutAlertOn              var     bit
+OutAlert=0
+OutAlertCounter=0
+OutAlertUpdate=0
+OutAlertOn=0
+OutAlertxTimes          var     byte
+OutAlertxTimes=0
+timer                   var     word
+timer=0
+indicate                var     byte
+CRC                     var     word
+
+mode                    var     byte
+mode="L"
+
+StackSer1               var     byte[buffer]
+RecSer1                 var     bit   '=1 in receiving mode
+RecSerTemp1             var     byte
+RecSerTemp2             var     byte
+PointerSer1             var     byte
+InterpreteSer1          var     bit
+RecSer1=0
+PointerSer1=0
+InterpreteSer1=0
+ReceiveTemp             var     byte
+broadcast               var     bit
+counter                 var     byte
+PortOld                 var     byte[3]
+
+i2cData0                var     byte
+'i2cData1                var     byte
+'i2cData2                var     byte
+
+LedCounter              var     word
+LedCounter=0
+LedAction               var     bit
+LedAction=0
+
+PowerSafe               var     bit
+PowerSafe=0   'Module is not in PowerSafe Mode (Leds off)
+
+'----------I2C constants and variables--------------------
+'led_status    VAR  PORTE.1   ' Led
+'high led_status
+'LED_Pwr    var  PORTE.2
+'Low LED_Pwr
+
+SENT_START              con     0
+REPEATED_START          con     1
+SENT_ADDRESS_W          con     2
+SENT_ADDRESS_R          con     3
+CHECK_ACK               con     4
+SENT_COMMANDCODE        con     5
+SENT_COMMANDDATA        con     6
+SENT_COMMANDDATA1       con     7
+SENT_COMMANDDATA2       con     8
+SENT_COMMANDDATA3       con     9
+SENT_ACK                con     10
+SENT_NACK               con     11
+SENT_STOP               CON     12
+CHECK_INTERRUPT         con     13
+ENABLE_RECEIVING        con     14
+RECEIVE_DATA            con     15
+PROCESS_DONE            con     16
+MAXI2CBYTES             con     5
+MAXI2CSTEPS             con     45
+TCA9539_0_ADDRESS       con     %11101011  'Chip for leds and buttons 6T and 37
+TCA9539_1_ADDRESS       con     %11101101  'Chip for leds 6T
+TCA9539_2_ADDRESS       con     %11101110
+TCA9539_3_ADDRESS       con     %11101100
+PCF8574_ADDRESS         con     %01000000
+PCF8574A_ADDRESS        con     %01110000
+M24C02_ADDRESS          CON     %10101100
+
+MAXRS485LENGTH          con     11  'Max length (in RS485 message) that can be used. Cannot be increased without changing variables A_Queue_...
+
+LED_ON                  con     1
+LED_OFF                 con     0
+YES                     con     1
+NO                      con     0
+
+'hier core
+CORE                    con     0
+TRADITIONAL_MASTER      con     1
+UNKNOWN                 con     255
+
+PCF8574i2ccont          var     byte
+PCF8574i2ccont=PCF8574_ADDRESS
+
+i2ccont                 var     byte     'chip address
+i2cdata                 var     byte[MAXI2CBYTES]     'data to read or write
+i2cdataTemp             var     byte
+i2cMode                 var     byte
+i2cModeOld              var     byte
+i2cAck                  var     bit
+i2cInt                  var     bit
+i2cCommandCode          var     byte
+i2cCommandData          var     byte
+i2cCommandData1         var     byte
+i2cCommandData2         var     byte
+i2cCommandData3         var     byte
+instruction_done        var     bit
+I2cStep                 var     byte[MAXI2CSTEPS]
+Fase                    var     byte
+ByteNr                  var     byte
+i2cerror                var     word
+tca9539_data            var     word
+'tca9539_data1           var     word
+tca9539_data_old        var      word
+'tca9539_data1_old       var     word
+led_st_red              var     bit
+led_st_green            var     bit
+
+i2caddr                 var     byte     'address within the chip to select data
+i2creadbit              var     bit
+i2cClock                var     bit
+i2cClock=0
+pcf8574                 var     bit
+eep_addr                var     word
+eep_addr_temp           var     word
+err                     var     byte
+Butt1                   var     bit
+test_mode               var     bit
+test_mode=NO
+'hier init
+init_message_sent       var     bit
+init_message_sent=NO
+automatic_module_search var     bit
+automatic_module_search=NO
+
+tca9539_data=65535
+'tca9539_data1=0
+tca9539_data_old=0
+'tca9539_data1_old=65535
+
+RESET_PIN               VAR     PORTE.2   'Reset pin of TCA9538 (gnd to reset)
+INTERRUPT_PIN           VAR     PORTE.1   'Interrupt pin from TCA9538
+'LED_STATUS              VAR  PORTE.1   'for non GEN3 hw
+                                       
+output  RESET_PIN 
+high    RESET_PIN 
+INPUT   INTERRUPT_PIN
+
+i2cMode=0
+i2cInt=0
+i2cerror=0
+butt1=1
+
+'-------------------------------------------------------------------------------
+
+sda                     var     PORTC.4
+scl                     var     PORTC.3
+'Button1                 var     PORTB.1
+'Button2                 var     PORTB.0
+DataIn                  var     PORTD.3   'BU2500 data pins (DA covertor)
+DataOut                 var     PORTD.0   'DataIn of the proc is connected to DataOut of the chip
+Clock                   var     PORTD.1   'DataOut of the proc is connected to DataIn of the chip
+LD                      var     PORTD.2
+AnVoltIn                var     PORTA.5
+AnVoltOut               Var     PORTA.3
+
+DABITS                  con     12
+DAstarted               var     bit
+DAstarted=0
+DAdata                  var     bit[DABITS]
+DAstate                 var     byte
+DAsubstate              var     byte
+DAtoggle                var     bit
+DAselect                var     byte
+Rec                     var     byte
+
+Button1Pressed          var     bit
+Button1Pressed=0
+Button1Timer            var     word
+Button1Timer2           var     word
+Button1Timer2=0
+indicateInitButton      var     byte     'When pressing init button, appropriate led will flicker to be able to switch ON or OFF
+indicateInitButton=0
+
+OutEeprom               var     byte
+OutEeprom=0
+
+selection_byte          var     byte
+send_message            var     bit
+message_check           var     byte[8]
+startup_master          var     byte
+startup_master=YES
+A_rs485_data            var     byte[MAXRS485LENGTH-3]
+rs485_length            var     byte
+
+'hier core
+Master_type             var     byte
+
+DAupdate                var     byte
+DAupdate=YES
+DAstatemachine          var     byte
+DAstatemachine=0
+DAinterrupt             var     bit
+DAinterruptCounter      var     byte
+
+Serial_year             var     byte
+Serial_month            var     byte
+Serial_day              var     byte
+Serial_prod_company     var     byte
+Serial_number           var     word
+Serial_errors           var     byte
+
+read 240,Serial_year
+read 241,Serial_month
+read 242,Serial_day
+read 243,Serial_prod_company
+read 244,Serial_number.byte1
+read 245,Serial_number.byte0
+read 246,Serial_errors
+if serial_year>99 or serial_month==0 or serial_month>12 or serial_day==0 or serial_day>31 then
+    Serial_year=0
+    Serial_month=0
+    Serial_day=0
+    Serial_prod_company=0
+    Serial_number.byte1=0
+    Serial_number.byte0=0
+    Serial_errors=0
+endif
+
+'input Button1
+'input Button2
+input sda
+input scl
+
+output  DataOut
+input   DataIn
+Output  LD
+Output  Clock
+input   AnVoltIn
+input   AnVoltOut
+
+low LD
+high Clock
+
+
+;----[High Priority Interrupts]-----------------------------------------------
+ASM
+INT_LIST  macro    ; IntSource,        Label,  Type, ResetFlag?
+        INT_Handler     RX1_INT,     _Receive1,    PBP,  no
+        INT_Handler     RX2_INT,     _Receive2,    PBP,  no 
+    endm
+    INT_CREATE               ; Creates the High Priority interrupt processor
+
+;----[Low Priority Interrupts]------------------------------------------------
+INT_LIST_L  macro  ; IntSource,        Label,  Type, ResetFlag?
+        INT_Handler     TMR0_INT,    _Timer0,      PBP,  yes       
+        INT_Handler     TMR2_INT,    _Timer2,      PBP,  yes 
+        INT_Handler     SSP_INT,     _SSP,         PBP,  no 
+    endm
+    INT_CREATE_L             ; Creates the Low Priority interrupt processor
+ENDASM
+
+T0CON=%10000001               ; T0 = 16-bit, 1:4 Prescaler
+T2CON=%00111100
+
+@    INT_ENABLE  RX1_INT       ; Enable USART Receive interrupts
+@    INT_ENABLE  RX2_INT       ; Enable USART Receive interrupts
+@    INT_ENABLE  TMR0_INT      ; enable Timer 0 interrupts
+@    INT_ENABLE  TMR2_INT      ; enable Timer 2 interrupts
+@    INT_ENABLE  SSP_INT
+
+TMR0L=0     'reset value
+TMR0H=0
+T0CON.7=1   'timer 0 enabled
+PIE1.1=1    'timer 2 interrupt enabled
+T2CON.2=0   'stop timer2
+PIE1.3=1    'enable SSP interrupt
+INTCON.6=1
+INTCON.7=1
+RCSTA1.7=1  'Enable UART1
+RCSTA1.4=0  'disable UART1 receiver
+PIE1.5=1    'Enable receive UART1 interrupt
+PIR1.5=0    'Clear RC1IF
+RCSTA1.4=1  'enable UART1 receiver
+TXSTA1.5=1  'enable UART1 transmit
+
+'Only use for debugging purposes
+RCSTA2.7=1  'Enable UART2
+RCSTA2.4=0  'disable UART2 receiver
+PIE3.5=1    'Enable receive UART2 interrupt
+PIR3.5=0    'Clear RC1IF
+''RCSTA2.4=1  'enable UART1 receiver
+TXSTA2.5=1  'enable UART2 transmit
+'hserout2 ["Dimmer: processor started, Hardware V",dec hardware,13,10] 
+
+read 0,Mod_NE        'Mode_ID in eeprom controller
+read 1,Mod_ID0
+read 2,Mod_ID1
+read 3,Mod_ID2
+read 4,Mod_ID3
+read 5,OutEeprom
+Mod_ID0 = "D"
+if Mod_NE==255 then Mod_NE="N"
+
+'hier Core
+read 10,Master_type     'Read which is the Master type (Traditional master or Core/Core+) that has initialised this module
+hserout2 ["Master Type: ",dec Master_type,13,10]
+
+CLEARWDT
+
+'PCF8574i2ccont=PCF8574_ADDRESS
+'i2cdata=255
+'gosub write_pcf8574
+'if err=1 then 
+'  PCF8574i2ccont=PCF8574A_ADDRESS  'if i2c address is not correct, take the other address
+'  i2cdata=255
+'  gosub write_pcf8574
+'endif
+gosub detect_i2c_chips 
+gosub check_startupreset  'check if reset
+
+CLEARWDT
+
+'bootloader, see http://wiki.openmotics.com/index.php/Bootloader
+read 64,x    'Read Hardware version
+if x<>hardware then 
+    write 64,hardware
+endif
+read 65,x    'Read Major firmware version
+if x<>version then 
+write 65,version
+endif
+read 66,x    'Read Minor firmware version
+if x<>firmware then 
+    write 66,firmware
+endif
+read 67,x    'Read Minor firmware version
+if x<>built then 
+    write 67,built
+endif 
+'read 74,x    'Read Flashmode variable and put on 5 so the bootloader knows the app is running, 5 retries
+write 74,5
+write 75,0    'Set Bootloader time on 0 seconds
+
+dimmer[0]=0
+dimmer[1]=0
+dimmer[2]=0
+dimmer[3]=0
+dimmer[4]=0
+dimmer[5]=0
+dimmer[6]=0
+dimmer[7]=0
+if Mod_ID1=255 and Mod_ID2=255 and Mod_ID3=255 then
+    if OutEeprom=255 then
+        dimmer[0]=0
+        dimmer[1]=0
+        dimmer[2]=0
+        dimmer[3]=0
+        dimmer[4]=0
+        dimmer[5]=0
+        dimmer[6]=0
+        dimmer[7]=0
+        gosub DAstart
+    else
+        Out=~OutEeprom
+        'OutOld=~Out
+        if Master_type==TRADITIONAL_MASTER then
+            dimmer[0]=63*out.bit0
+            dimmer[1]=63*out.bit1
+            dimmer[2]=63*out.bit2
+            dimmer[3]=63*out.bit3
+            dimmer[4]=63*out.bit4
+            dimmer[5]=63*out.bit5
+            dimmer[6]=63*out.bit6
+            dimmer[7]=63*out.bit7 
+        else
+            dimmer[0]=255*out.bit0
+            dimmer[1]=255*out.bit1
+            dimmer[2]=255*out.bit2
+            dimmer[3]=255*out.bit3
+            dimmer[4]=255*out.bit4
+            dimmer[5]=255*out.bit5
+            dimmer[6]=255*out.bit6
+            dimmer[7]=255*out.bit7        
+        endif           
+        gosub write_output
+        OutAlertCounter=0  
+    endif
+endif
+CLEARWDT
+gosub Init_dac
+gosub Nightrider_on_frontpanel
+gosub All_leds_on
+T2CON.2=1   'start Timer2
+led_st_red=LED_OFF
+led_st_green=LED_OFF
+gosub Set_status_led
+gosub Print_serial_number 
+hserout2 ["Startup done F",dec version,".",dec firmware,".",dec built," ID (",Mod_NE,"): ",Mod_ID0,".",dec Mod_ID1,".",dec Mod_ID2,".",dec Mod_ID3,13,10,"------------------------------------",13,10]  
+
+'----------------------------------------------------------------------------
+' Main routine
+'----------------------------------------------------------------------------
+
+mainloop:
+    CLEARWDT
+    gosub interprete_serial     'check information coming from the RS485 bus
+    gosub check_LedAction       'Set leds correctly
+    gosub Display_AlertLeds     'Check if any leds needs to flash, normal or inverted state
+    gosub Check_SerialErrors    'Check if serial errors happened
+    'gosub DAcheck              'DA conversion
+    gosub DA_task               'Check if writing to the DAC is needed
+    if mode="L" then           
+        gosub check_inputs2     'check if init button is pressed to change output change
+    else                        'bus is in Initialization mode
+        gosub check_inputs      'during initialization, init button needs to be checked
+    endif
+    gosub Check_button_pressed  'Check button pressed  
+Goto mainloop
+
+'--------------------------------------------------------------------------
+' Interrupt routines
+'--------------------------------------------------------------------------
+
+Receive1:                  'RS485 receive routine
+    recsertemp1=recsertemp2  'Keep previous character also
+    recsertemp2=RCREG1
+    if recser1=1 then        'Receiving?
+        StackSer1[PointerSer1]=recsertemp2
+        pointerser1=pointerser1+1
+        if recsertemp1=13 and recsertemp2=10 then
+            if Pointerser1>17 then
+                RCSTA1.4=0           'disable receiving serial 1
+                RecSer1=0            'stop receiving ser1 and buffering
+                InterpreteSer1=1
+            endif    
+        else
+            if pointerser1>(Buffer-2) then  'Buffer overflow -> stop receiving and interprete
+                RCSTA1.4=0           'disable receiving serial 1
+                RecSer1=0            'stop receiving ser1 and buffering
+                InterpreteSer1=1
+            endif
+        endif      
+    else                     'Not in receiving mode
+        if recsertemp1="S" and recsertemp2="T" then
+            Pointerser1=0
+            recser1=1            'start receiving ser1
+        endif
+    endif
+    'RCSTA1.4=1  'enable UART1 receiver
+@ INT_RETURN
+
+Receive2:
+    RCSTA2.4=0  'disable UART1 receiver
+    rec=RCREG2
+    RCSTA2.4=1  'enable UART1 receiver
+@ INT_RETURN
+
+Timer0:    'interrupt after 26ms when i2c is active
+    T0CON.7=0  'timer 0 disabled
+    INTCON.2=0 'interrupt flag cleared
+    i2cerror=i2cerror+1
+    hserout2 ["Error I2C ",dec i2cmode,13,10]
+    i2cmode=0  'stop
+    err=1      'error
+@ INT_RETURN
+
+Timer2:   'interrupt every 204us  
+    T2CON.2=0  'stop timer2
+    PIR1.1=0   'clear timer2 interrupt flag 
+    timer=timer+1
+    OutAlertxTimes=OutAlertxTimes+1
+    if timer=640 then 
+        OutAlertOn=0
+        if OutAlertCounter>0 then OutAlertUpdate=1
+    endif  
+    if timer=8000 then
+        timer=0
+        OutAlertOn=1
+        if OutAlertCounter>0 then OutAlertUpdate=1  
+    endif 
+    if LedCounter>0 then 
+        LedCounter=LedCounter-1
+        if LedCounter=0 then LedAction=1
+    endif    
+    if outalertcounter>0 then
+        if OutAlertxTimes>31 then
+            OutAlertxTimes=0    
+            if OutAlertDouble=1 then OutAlertCounter=Outalertcounter-1
+            toggle OutAlertDouble
+        endif     
+    endif
+    if Button1Pressed=1 and Button1Timer>0 then Button1Timer=Button1Timer-1
+    if Button1Pressed=1 then Button1Timer2=Button1Timer2+1
+    'call TIMERINT  'DAC state machine
+    DAinterrupt=YES
+    T2CON.2=1      'start timer2
+@ INT_RETURN
+
+SSP:
+    PIE1.3=0   'disable interrupt
+    i2cMode=i2cMode+1
+    i2cInt=1
+    PIR1.3=0   'clear interrupt flag
+    PIE1.3=1   'enable interrupt  
+@ INT_RETURN
+
+;---------------------------------------------------------------------------
+; Subroutines
+;---------------------------------------------------------------------------
+
+Print_serial_number:
+    hserout2 ["SN: "]
+    if serial_day==0 and Serial_month==0 then
+        hserout2 ["-",13,10]
+    else
+        hserout2 [dec2 Serial_year,dec2 Serial_month,dec2 Serial_day,dec1 Serial_prod_company,dec5 serial_number,"(",dec Serial_errors,")",13,10]
+    endif
+return
+
+Init_dac:
+    gosub DACinitParameters0
+    gosub execute_spi
+    gosub DACinitParameters1
+    gosub execute_spi  
+return
+
+execute_spi:
+    for t=0 to 60
+        gosub TIMERINT
+        pauseus 204
+    next t
+return
+
+DACinitParameters0:
+    'set DAdata correctly with DAselect parameters
+    DAdata[11]=1
+    DAdata[10]=0
+    DAdata[9]=0
+    DAdata[8]=1
+    DAdata[7]=1
+    DAdata[6]=1
+    DAdata[5]=1
+    DAdata[4]=1
+    DAdata[3]=1
+    DAdata[2]=1
+    DAdata[1]=1
+    DAdata[0]=1
+    DAstate=DABITS     'do the 12 states (11-1 are the bit shifting, 0 is the stop condition)
+    DAsubstate=0  
+    DAstarted=1        'start DAC shifting
+return
+
+DACinitParameters1:
+    'set DAdata correctly with DAselect parameters
+    DAdata[11]=0
+    DAdata[10]=0
+    DAdata[9]=1
+    DAdata[8]=1
+    DAdata[7]=1
+    DAdata[6]=1
+    DAdata[5]=1
+    DAdata[4]=1
+    DAdata[3]=1
+    DAdata[2]=1
+    DAdata[1]=1
+    DAdata[0]=1
+    DAstate=DABITS     'do the 12 states (11-1 are the bit shifting, 0 is the stop condition)
+    DAsubstate=0  
+    DAstarted=1        'start DAC shifting
+return
+
+TIMERINT:
+    if DAstarted=1 then  'Sending data to DA is active
+        if DAstate>0 then  'Bits needs to be shifted to DA
+            if DAsubstate=0 then low clock                '3 substates to perform 1 bit shift
+            if DAsubstate=1 then DataOut=DAdata[DAstate-1]
+            if DAsubstate=2 then high clock
+            DAsubstate=DAsubstate+1
+            if DAsubstate>2 then
+                DAsubstate=0  'substate is finished and a new bitshift can be started
+                if DAstate>0 then DAstate=DAstate-1  'perform the next bit shift
+                If DAstate=0 then                    'all bits have been shifted
+                    DAstarted=0                        'stop shifting
+                    DAselect=DAselect+1                'go to next DAC port
+                    high clock                         'generate stop condition
+                    high LD
+                    pauseus 400
+                    low LD
+                endif  
+            endif 
+        endif
+    endif
+return
+
+DAstart:
+    if DAstarted=0 then 
+        DAselect=0     'start with port 0 of DAC    
+        for t=0 to 100
+            if DAselect>7 then
+                t=100     'exit
+            else
+                gosub DAcheck
+                pause 1  
+            endif
+        next t
+    endif
+return
+
+'hier core
+DAstartparameters:
+    'set DAdata correctly with DAselect parameters
+    x=DAselect+1       
+    DAdata[8]=x.bit3    'put the correct select bits
+    DAdata[9]=x.bit2
+    DAdata[10]=x.bit1
+    DAdata[11]=x.bit0
+    if Master_type==TRADITIONAL_MASTER then
+        y=((dimmer[DAselect]+1)*4)-1    'Value between 0-63
+        if y<4 then y=0
+    else                'Data from core
+        y=dimmer[DAselect]              'Value between 0-255
+    endif
+    DAdata[7]=y.bit7    'put the correct data bits
+    DAdata[6]=y.bit6
+    DAdata[5]=y.bit5
+    DAdata[4]=y.bit4
+    DAdata[3]=y.bit3
+    DAdata[2]=y.bit2
+    DAdata[1]=y.BIT1
+    DAdata[0]=y.BIT0
+    'hserout2 [dec Master_type," ",dec x," ",dec y," ",dec dimmer[DAselect],13,10]
+    DAstate=DABITS      'do the 12 states (11-1 are the bit shifting, 0 is the stop condition)
+    DAsubstate=0  
+    DAstarted=1         'start DAC shifting
+return
+
+DAcheck:
+    if DAstarted=0 then  'check if other data needs to be sent
+        if DAselect<8 then
+            gosub DAstartparameters
+        endif
+    endif
+return
+
+DA_task:
+    if DAstatemachine==0 then       'step0: Set general paramerters
+        if DAupdate==YES then       'A DAC update is needed?
+            DAupdate=NO
+            DAselect=0              'start updating the first DAC
+            DAstatemachine=DAstatemachine+1           
+        endif 
+    elseif DAstatemachine==1 then   'step1: Set DAC parameters
+        x=DAselect+1       
+        DAdata[8]=x.bit3            'put the correct select bits
+        DAdata[9]=x.bit2
+        DAdata[10]=x.bit1
+        DAdata[11]=x.bit0
+        if Master_type==TRADITIONAL_MASTER then
+            y=((dimmer[DAselect]+1)*4)-1    'Value between 0-63
+            if y<4 then y=0
+        else                        'Data from core
+            y=dimmer[DAselect]      'Value between 0-255
+        endif
+        DAdata[7]=y.bit7            'put the correct data bits
+        DAdata[6]=y.bit6
+        DAdata[5]=y.bit5
+        DAdata[4]=y.bit4
+        DAdata[3]=y.bit3
+        DAdata[2]=y.bit2
+        DAdata[1]=y.BIT1
+        DAdata[0]=y.BIT0
+        DAstate=DABITS              'do the 12 states (11-1 are the bit shifting, 0 is the stop condition)
+        DAsubstate=0        
+        DAstatemachine=DAstatemachine+1    
+    elseif DAstatemachine==2 then   'step2: execute DA steps
+        if DAinterrupt==YES then
+            DAinterrupt=NO
+            if DAstate>0 then       'Bits needs to be shifted to DA
+                if DAsubstate=0 then low clock                '3 substates to perform 1 bit shift
+                if DAsubstate=1 then DataOut=DAdata[DAstate-1]
+                if DAsubstate=2 then high clock
+                DAsubstate=DAsubstate+1
+                if DAsubstate>2 then
+                    DAsubstate=0    'substate is finished and a new bitshift can be started
+                    if DAstate>0 then DAstate=DAstate-1     'perform the next bit shift
+                    If DAstate==0 then                      'all bits have been shifted
+                        'DAstarted=0                        'stop shifting
+                        'DAselect=DAselect+1                 'go to next DAC port
+                        high clock                          'generate stop condition
+                        high LD
+                        'pauseus 400
+                        'low LD
+                        DAstatemachine=DAstatemachine+1
+                    endif  
+                endif 
+            else
+                DAstatemachine=DAstatemachine+1  
+            endif
+        endif
+    elseif DAstatemachine==3 then   'step3: Wait 400us
+        if DAinterrupt==YES then
+            DAinterrupt=NO
+            DAinterruptCounter=DAinterruptCounter+1
+            if DAinterruptCounter>=2 then
+                low LD
+                DAstatemachine=DAstatemachine+1
+            endif
+        endif
+    elseif DAstatemachine==4 then   'step4: Check next Output to be written
+        'hserout2 [dec Master_type," ",dec DAselect," ",dec dimmer[DAselect],13,10]
+        DAselect=DAselect+1
+        if DAselect>=8 then
+            DAselect=0
+            DAstatemachine=0        'end
+        else
+            DAstatemachine=1        'shift next value into DAC    
+        endif            
+    endif
+return
+
+'---------------------------------------------------------------------------
+' RS485 routines
+'---------------------------------------------------------------------------
+
+Check_init_led:
+    if automatic_module_search==YES and mode=="I" and Mod_NE=="E" then 
+        led_st_red=LED_OFF
+        led_st_green=LED_ON
+        gosub Set_status_led     
+    endif
+return
+
+Interprete_Serial: 'Interprete data coming from the RS485 bus
+    if InterpreteSer1=1 then
+        'RCSTA1.4=0               'disable receiving serial 1  
+        InterpreteSer1=0
+        if pointerser1>6 then   
+            if stackser1[0]="D" then  'output module addressed
+                gosub Check_Output_Module  
+            elseif stackser1[0]=0 and stackser1[1]=0 and stackser1[2]=0 and stackser1[3]=0 then    'Broadcast message
+                if stackser1[4]="L" and stackser1[5]="L" then   'Bus in Live mode
+                    if mode="I" then                            'Put startup_master to NO when first direct message from Master to this module is received
+                        if startup_master==YES then                             
+                            if Mod_NE=="E" then
+                                led_st_red=LED_ON
+                                led_st_green=LED_OFF                            
+                            else
+                                led_st_red=LED_OFF
+                                led_st_green=LED_OFF
+                            endif
+                        else 
+                            led_st_red=LED_OFF
+                            led_st_green=LED_ON              
+                        endif
+                        gosub Set_status_led
+                        hserout2 ["Live",13,10]
+                    endif  
+                    'hier init
+                    automatic_module_search=NO
+                    mode="L"
+                elseif stackser1[4]="I" and stackser1[5]="I" then   'Bus in Initialize mode
+                    gosub generate_id
+                    if mode="L" then
+                        led_st_red=LED_ON
+                        led_st_green=LED_ON 
+                        gosub Set_status_led
+                        hserout2 ["Init",13,10]
+                    endif
+                    mode="I"                    
+                elseif StackSer1[4]=="S" and StackSer1[5]=="M" then     'Search Module
+                    if StackSer1[15]=="C" then                            'CRC in message
+                        rs485_length=15
+                        'hier init
+                        automatic_module_search=YES
+                        gosub Check_init_led
+                        gosub Check_CRC16_in_RS485_message
+                        'hserout2 ["Search Module ",dec CRC.byte1," ",dec CRC.byte0," ",dec A_StackSer1[16]," ",dec A_StackSer1[17],13,10]
+                        if CRC.byte1==StackSer1[16] and CRC.byte0==StackSer1[17] then   'CRC OK
+                            selection_byte=StackSer1[14]
+                            message_check[0]=Mod_id0
+                            message_check[1]=Mod_id1
+                            message_check[2]=Mod_id2
+                            message_check[3]=Mod_id3
+                            message_check[4]=Mod_NE
+                            message_check[5]=0          'Not used
+                            message_check[6]=0          'Not used
+                            message_check[7]=0          'Not used
+                            send_message=YES                            
+                            for i=0 to 7
+                                t=selection_byte<<i
+                                if t.bit7==1 then
+                '                   hserout2 ["Check Pos ",dec i," data ",dec message_check[i]," ",dec A_StackSer1[6+i],13,10]
+                                    if message_check[i]!=StackSer1[6+i] then send_message=NO
+                                endif
+                            next i
+                            if send_message==YES then
+                                'hserout2 ["Message can be sent!",13,10]
+                                s1=0
+                                s2=Mod_NE               'E->existing,N->New
+                                gosub rs485_send                               
+                            endif
+                        endif
+                    endif                
+                elseif stackser1[4]="N" and stackser1[5]="N" then   'Module in Normal state (Leds on)
+                    PowerSafe=0
+                    OutAlertUpdate=1 
+                elseif stackser1[4]="S" and stackser1[5]="S" then   'Module in Power Safe state (Leds off)
+                    PowerSafe=1
+                    OutAlertUpdate=1
+                elseif StackSer1[4]=="S" and StackSer1[5]=="U" then     'Start Up broadcast
+                    startup_master=YES                                      'Put startup_master to NO when first direct message from Master to this module is received
+                    if Mod_NE=="E" then
+                        led_st_red=LED_ON
+                        led_st_green=LED_OFF                    
+                    else
+                        led_st_red=LED_OFF
+                        led_st_green=LED_OFF
+                    endif
+                    gosub Set_status_led 
+                elseif stackser1[4]="T" and stackser1[5]="M" then   'Instruction only requested in Test Mode
+                    indicate=255
+                    Powersafe=0
+                    toggle led_st_red
+                    toggle led_st_green
+                    gosub Set_status_led
+                    Gosub Test_instructions
+                endif                    
+            elseif mode="I" and stackser1[0]="A" and stackser1[1]="D" then   'activate device
+                gosub activate_device
+            endif
+        endif
+        pointerser1=0
+        RCSTA1.4=1            'enable receiving serial 1
+    endif
+return
+
+'testmode
+Test_instructions:
+    if stackser1[6]="V" then  'Firmware version
+        test_mode=YES
+        high RS485_mode     'send mode
+        hserout ["RC",0,0,0,0,"V",Mod_ID0,hardware,version,firmware,built,13,10,13,10]
+        'low RS485_mode      'receive mode
+        gosub low_rs485_mode
+    elseif stackser1[6]="S" then  'Set Ports
+        test_mode=YES
+        'out=0
+        'for i=0 to 7
+        '    if stackser1[7+i]>0 then   'port 7..0
+        '        x=%10000000>>i
+        '        out=out|x
+        '        dimmer[7-i]=63
+        '    else
+        '        dimmer[7-i]=0   
+        '    endif
+        'next i
+        out=stackser1[7]
+        dimmer[0]=255*out.bit0
+        dimmer[1]=255*out.bit1
+        dimmer[2]=255*out.bit2
+        dimmer[3]=255*out.bit3
+        dimmer[4]=255*out.bit4
+        dimmer[5]=255*out.bit5
+        dimmer[6]=255*out.bit6
+        dimmer[7]=255*out.bit7          
+        gosub write_output
+    elseif stackser1[6]=="P" then   'Programming Eeprom
+        test_mode=YES
+        if stackser1[7]==0 then     '0->Write full serial number including date and errors
+            Serial_year=stackser1[8]
+            Serial_month=stackser1[9]
+            Serial_day=stackser1[10]
+            Serial_prod_company=stackser1[11]
+            Serial_number.byte1=stackser1[12]
+            Serial_number.byte0=stackser1[13]
+            Serial_errors=stackser1[14]
+            hserout2 ["Data Received: ",dec Serial_year," ",dec Serial_month," ",dec Serial_day," ",dec Serial_prod_company," ",dec serial_number," ",dec Serial_errors,13,10]
+            write 240,Serial_year
+            write 241,Serial_month
+            write 242,Serial_day
+            write 243,Serial_prod_company
+            write 244,Serial_number.byte1
+            write 245,Serial_number.byte0
+            write 246,Serial_errors
+            gosub Print_serial_number            
+            high RS485_mode     'send mode
+            hserout ["RC",0,0,0,0,"P",0,Serial_year,Serial_month,Serial_day,Serial_prod_company,serial_number.byte1,serial_number.byte0,Serial_errors,13,10,13,10]
+            gosub Low_rs485_mode              
+        endif        
+    elseif stackser1[6]="B" then  'Provide Button state
+        high RS485_mode     'send mode
+        hserout ["RC",0,0,0,0,"B",1,Butt1,13,10,13,10]
+        'low RS485_mode      'receive mode 
+        gosub low_rs485_mode                                
+    endif
+return
+
+check_SerialErrors:
+    if RCSTA1.2=1 then  'frame error bit
+        x=RCREG1
+        hserout2 ["Frame error UART1",13,10]
+    endif
+    if RCSTA1.1=1 then  'Overrun Error bit
+        RCSTA1.4=0    'disable receiver
+        pause 2
+        hserout2 ["Overrun error UART1",13,10]
+        RCSTA1.4=1    'enable receiver
+    endif
+return
+
+'hier core
+Check_output_module:
+    if stackser1[0]=Mod_id0 and stackser1[1]=Mod_id1 and stackser1[2]=Mod_id2 and stackser1[3]=Mod_id3 then
+        startup_master=NO
+        led_st_red=LED_OFF
+        led_st_green=LED_ON
+        gosub Set_status_led
+        'hserout2 ["R",13,10]    
+        'bootloader
+        if Master_type=CORE then        'RS485 protocol V2 (only Core/Core+)
+            if stackser1[4]="o" then    'Output command to set outputs
+                if StackSer1[15]=="C" then                            'CRC in message
+                    rs485_length=15
+                    gosub Check_CRC16_in_RS485_message
+                    'hserout2 ["Output ",dec CRC.byte1," ",dec CRC.byte0," ",dec StackSer1[16]," ",dec StackSer1[17],13,10]
+                    if CRC.byte1==StackSer1[16] and CRC.byte0==StackSer1[17] then   'CRC OK
+                        out=stackser1[5]
+                        indicate=Stackser1[6]
+                        for r=0 to 7
+                            dimmer[r]=stackser1[7+r]
+                        next r
+                        s1="K"
+                        s2=out
+                        gosub rs485_send                        
+                        z=out
+                        dimmer[0]=dimmer[0]*z.bit0
+                        dimmer[1]=dimmer[1]*z.bit1
+                        dimmer[2]=dimmer[2]*z.bit2
+                        dimmer[3]=dimmer[3]*z.bit3
+                        dimmer[4]=dimmer[4]*z.bit4
+                        dimmer[5]=dimmer[5]*z.bit5
+                        dimmer[6]=dimmer[6]*z.bit6
+                        dimmer[7]=dimmer[7]*z.bit7                                                 
+                        gosub write_output
+                        's1="K"
+                        's2=out
+                        'gosub rs485_send
+                        'hserout2 ["S",13,10]
+                    else
+                        hserout2 ["CRC Error ",dec CRC.byte1," ",dec CRC.byte0," ",dec StackSer1[16]," ",dec StackSer1[17],13,10]                    
+                    endif
+                else
+                    hserout2 ["C Error ",dec StackSer1[14]," ",dec StackSer1[15]," ",dec StackSer1[16]," ",dec StackSer1[17],13,10]    
+                endif                
+            elseif stackser1[4]="F" and stackser1[5]="V" then      'Request Firmware Version
+                s1="V"
+                gosub send_F_response
+            elseif stackser1[4]="F" and stackser1[5]="L" then   'Request Firmware Version and Serial number
+                s1="L"
+                gosub send_F_response                 
+            elseif stackser1[4]="F" and stackser1[5]="R" then  'Perform Reset of the module
+                write 75,stackser1[6]                            'Write number of seconds that this module must remain in bootloader mode
+                s1="R"
+                gosub send_F_response
+                pause 5
+                asm
+                    reset
+                endasm
+            else
+                hserout2 ["Wrong instr ",dec StackSer1[4]," ",dec StackSer1[5]," ",dec StackSer1[6]," ",dec StackSer1[7],13,10]             
+            endif
+                    
+        else                            'RS485 protocol V1 (only Traditional Master)
+        
+            if stackser1[4]="F" and stackser1[5]="V" then      'Request Firmware Version
+                s1="V"
+                gosub send_F_response
+            elseif stackser1[4]="F" and stackser1[5]="R" then  'Perform Reset of the module
+                write 75,stackser1[6]                            'Write number of seconds that this module must remain in bootloader mode
+                s1="R"
+                gosub send_F_response
+                asm
+                    reset
+                endasm      
+            else
+                CRC=stackser1[4]+stackser1[5]+stackser1[6]+stackser1[7]+stackser1[8]+stackser1[9]+stackser1[10]+stackser1[11]+stackser1[12]+stackser1[13]
+                'hserout2 ["Message ",dec CRC.byte1," ",dec CRC.byte0," ",dec StackSer1[16]," ",dec StackSer1[17]," ",dec stackser1[14],13,10]
+                if stackser1[14]="C" and stackser1[15]=CRC.byte1 and stackser1[16]=CRC.byte0 then
+                    out=stackser1[4]
+                    indicate=Stackser1[5]
+                    for r=0 to 7
+                        dimmer[r]=stackser1[6+r]
+                    next r
+                    s1="K"
+                    s2=out
+                    gosub rs485_send                    
+                    z=out
+                    dimmer[0]=dimmer[0]*z.bit0
+                    dimmer[1]=dimmer[1]*z.bit1
+                    dimmer[2]=dimmer[2]*z.bit2
+                    dimmer[3]=dimmer[3]*z.bit3
+                    dimmer[4]=dimmer[4]*z.bit4
+                    dimmer[5]=dimmer[5]*z.bit5
+                    dimmer[6]=dimmer[6]*z.bit6
+                    dimmer[7]=dimmer[7]*z.bit7        
+                    gosub write_output
+                endif
+            endif
+        endif  
+    endif        
+return
+
+'bootloader
+send_F_response:
+    high RS485_mode 'send mode
+    if s1="V" then  'Firmware version
+        CRC=Mod_id0+Mod_id1+Mod_id2+Mod_id3+"F"+"V"+255+hardware+version+firmware+built
+        hserout ["RC",Mod_id0,Mod_id1,Mod_id2,Mod_id3,"F","V",255,hardware,version,firmware,built,0,"C",CRC.byte1,CRC.byte0,13,10,13,10]
+        'hserout ["AAARC",Mod_id0,Mod_id1,Mod_id2,Mod_id3,"F","V",255,hardware,version,firmware,built,0,"C",CRC.byte1,CRC.byte0,13,10,13,10]
+        'low RS485_mode  'Receive mode
+        'hserout2 ["Firmware V instruction",13,10]
+    elseif s1="L" then  'Firmware version and serial number
+        CRC=Mod_id0+Mod_id1+Mod_id2+Mod_id3+"F"+"L"+255+hardware+version+firmware+built+Serial_year+Serial_month+Serial_day+Serial_prod_company+serial_number.byte1+serial_number.byte0+Serial_errors
+        hserout ["RC",Mod_id0,Mod_id1,Mod_id2,Mod_id3,"F","L",255,hardware,version,firmware,built,0,Serial_year,Serial_month,Serial_day,Serial_prod_company,serial_number.byte1,serial_number.byte0,Serial_errors,"C",CRC.byte1,CRC.byte0,13,10,13,10]        
+        'hserout2 ["Sending FL",13,10]        
+    else            'Reset
+        CRC=Mod_id0+Mod_id1+Mod_id2+Mod_id3+"F"+"R"+255
+        hserout ["RC",Mod_id0,Mod_id1,Mod_id2,Mod_id3,"F","R",255,"C",CRC.byte1,CRC.byte0,13,10,13,10]
+        'hserout ["AAARC",Mod_id0,Mod_id1,Mod_id2,Mod_id3,"F","R",255,"C",CRC.byte1,CRC.byte0,13,10,13,10]
+        'low RS485_mode  'Receive mode
+        'Hserout2 ["Firmware R instruction ",dec stackser1[6],13,10]
+    endif
+    'low RS485_mode  'Receive mode
+    gosub low_rs485_mode
+return
+
+Low_rs485_mode:
+    do until (TXSTA1.bit1=1)  'Wait until transmit buffer is empty
+    loop
+    low RS485_mode  'Receive mode
+return
+
+Display_AlertLeds:
+    if OutalertUpdate=1 then 'Led needs to be updated
+        OutAlertUpdate=0
+        if OutAlertOn=0 then 'Normal led condition
+            x=~out
+            gosub set_leds
+            gosub write_leds
+            'led_st_red=LED_OFF
+            'led_st_green=LED_OFF
+            gosub Set_status_led 
+        else                 'Inverted led condition
+            y=out^OutAlert
+            x=~y
+            gosub set_leds
+            gosub write_leds
+            'led_st_red=LED_ON
+            'led_st_green=LED_ON
+            gosub Set_status_led
+        endif
+    endif
+return
+
+set_leds:
+    'if PowerSafe=1 then  'Module is in power safe mode
+    '  x=255              'switch off leds
+    'endif   
+    i2cdata0=x
+return
+
+write_output:
+    'hserout2 ["write Output ",bin8 out,13,10]
+    'gosub DAstart    'write values to DAC
+    DAupdate=YES        'start update DAC
+    x=~out
+    gosub set_leds
+    gosub write_leds  
+    if indicate<8 then
+        OutAlert=%00000001<<indicate
+        OutAlertCounter=3050 '20 seconden 
+    endif
+    if Mod_ID1=255 and Mod_ID2=255 and Mod_ID3=255 and test_mode=NO then   'Module is not configured
+        write 5,~out                                        'remember the outputs that are on
+    endif
+return
+
+'generate_ID:
+'    if Mod_NE<>"E" and Mod_NE<>"P" then   'Not yet a unique code
+'        Mod_NE="N"
+'        for q=0 to 2
+'            random w1                              'generate random ID
+'            if w1.byte0<>255 and w1.byte0<>0 then  'Random value if ok
+'                tmp[q]=w1.byte0
+'            else                                   'Random value is not ok
+'                tmp[q]=171+q                         'Random value (My bithday :))
+'            endif
+'        next q
+'        Mod_ID1=tmp[0]         
+'        Mod_ID2=tmp[1]
+'        Mod_ID3=tmp[2]
+'    endif
+'return
+
+generate_ID:
+    if Mod_NE<>"E" and Mod_NE<>"P" then   'Not yet a unique code
+        Mod_NE="N"
+        pauseus (serial_number.byte0+serial_month+serial_day)
+        random w1
+        'for q=0 to 2
+        '    pauseus (serial_number+serial_day)     'To make sure the generated  
+        '    random w1                              'generate random ID
+        '    if w1.byte0<>255 and w1.byte0<>0 then  'Random value if ok
+        '        tmp[q]=w1.byte0
+        '    else                                   'Random value is not ok
+        '        tmp[q]=171+q                         'Random value (My bithday :))
+        '    endif
+        'next q
+        Mod_ID1=Serial_day+w1.byte1         
+        Mod_ID2=Serial_number.byte1+w1.byte0
+        Mod_ID3=serial_number.byte0
+    endif
+return
+
+check_startupreset:
+    gosub read_tca9539_data   'Check input even when input hasn't changed
+    for s=0 to 40
+        gosub read_tca9539_data
+        if butt1=0 then test=1 
+        if butt1=1 then s=40 : test=0  'button not pressed long enough        
+        pause 50
+    next s
+    if test>0 then
+        write 0,255        'Mode_ID in eeprom controller
+        write 1,255
+        write 2,255
+        write 3,255
+        write 4,255
+        hserout2 ["Clear ID",13,10]
+        for s=0 to 3
+            led_st_red=LED_ON
+            led_st_green=LED_ON
+            gosub Set_status_led
+            pause 100
+            led_st_red=LED_OFF
+            led_st_green=LED_OFF
+            gosub Set_status_led
+            pause 100  
+        next s 
+    endif    
+return
+
+check_inputs: 'during initialization, inputs needs to be checked
+    if Butt1=0 then    'initialization button is pressed
+        if reset_count=0 then   'Message is sent for the first time
+            gosub generate_id
+            s1=0
+            s2=Mod_NE   'E->existing,N->New
+            gosub rs485_send
+            'hier init
+            init_message_sent=YES
+            reset_count=10000   'Time to get a response
+        endif
+    else           'initialization button is not pressed
+        'hier init
+        if reset_count>0 then 
+            reset_count=reset_count-1
+        else
+            init_message_sent=NO
+        endif             
+    endif
+return
+
+'rs485_send:
+'    if mode="L" then 
+'        'low led_status
+'        low led_st
+'        gosub Set_status_led     
+'        LedAction=0
+'        Ledcounter=640
+'    endif  
+'    pauseus 1350
+'    high RS485_mode     'send mode
+'    hserout ["AAARC",Mod_ID0,Mod_ID1,Mod_ID2,Mod_ID3,s1,s2,13,10,13,10]
+'    low RS485_mode      'receive mode 
+'return
+
+rs485_send:
+'    if mode=="L" then 
+'      LED_STATUS_RED=LED_ON
+'      LED_STATUS_GREEN=LED_ON            
+'   endif    
+    rs485_length=6              'Payload length
+    A_rs485_data[0]=Mod_ID0     'Payload data
+    A_rs485_data[1]=Mod_ID1
+    A_rs485_data[2]=Mod_ID2
+    A_rs485_data[3]=Mod_ID3
+    A_rs485_data[4]=s1
+    A_rs485_data[5]=s2
+    gosub Calc_CRC16            'Calculate CRC
+    'pauseus 2500
+    high RS485_mode              'send mode
+    hserout ["RC",A_rs485_data[0],A_rs485_data[1],A_rs485_data[2],A_rs485_data[3],A_rs485_data[4],A_rs485_data[5],"C",CRC.byte1,CRC.Byte0,13,10]
+    gosub low_rs485_mode
+return
+
+Check_LedAction:
+    if LedAction=1 and mode="L" then
+        led_st_red=LED_OFF
+        led_st_green=LED_OFF
+        gosub Set_status_led
+        LedAction=0
+        Ledcounter=0
+    endif
+return
+
+'hier Search Module
+Calc_CRC16:
+    CRC=$FFFF	
+    For i=0 to rs485_length-1
+        CRC=CRC^A_rs485_data[i]
+        For j=1 to 8 
+            IF CRC.Bit0=1 Then 
+                CRC=$A001^(CRC>>1)
+            Else 
+                CRC=CRC>>1
+            EndIF
+        Next j
+    Next i
+return
+
+'hier Search Module
+Check_CRC16_in_RS485_message:
+    CRC=$FFFF	
+    For i=0 to rs485_length-1
+        CRC=CRC^StackSer1[i]
+        For j=1 to 8 
+            IF CRC.Bit0=1 Then 
+                CRC=$A001^(CRC>>1)
+            Else 
+                CRC=CRC>>1
+            EndIF
+        Next j
+    Next i
+return
+
+'hier core
+activate_device:
+    'hier init
+    if StackSer1[2]==Mod_ID0 and StackSer1[3]==Mod_ID1 and StackSer1[4]==Mod_ID2 and StackSer1[5]==Mod_ID3 and (init_message_sent==YES or automatic_module_search==YES) then 
+        if Mod_NE=="N" or Mod_NE=="P" then  'ID is New or Programmed (and thus new)
+            hserout2 ["Add new module ",Mod_ID0,".",dec Mod_ID1,".",dec Mod_ID2,".",dec Mod_ID3," char12.. ",dec StackSer1[12]," ",dec StackSer1[13]," ",dec StackSer1[14]," ",dec StackSer1[15]," ",dec StackSer1[16]," ",dec StackSer1[17],13,10]            
+            if StackSer1[15]="c" then       'CRC16 is included in the message (Core/Core+), otherwise ignore
+                rs485_length=15
+                gosub Check_CRC16_in_RS485_message
+                if CRC.byte1==StackSer1[16] and CRC.byte0==StackSer1[17] then
+                    hserout2 ["CORE: CRC ",dec StackSer1[16]," ",dec StackSer1[17]," ",dec CRC.byte1," ",dec CRC.byte0,13,10]
+                    Mod_NE="E"
+                    write 0,Mod_NE          'Mode_ID in eeprom controller
+                    write 1,Mod_ID0
+                    write 2,Mod_ID1
+                    write 3,Mod_ID2
+                    write 4,Mod_ID3
+                    write 10,CORE
+                    Master_type=CORE
+                    led_st_red=LED_OFF
+                    led_st_green=LED_ON 
+                    gosub Set_status_led                        
+                endif
+            elseif StackSer1[15]="C" then   'Checksum is included in the message (Traditional Master), otherwise ignore
+                CRC=StackSer1[0]+StackSer1[1]+StackSer1[2]+StackSer1[3]+StackSer1[4]+StackSer1[5]+StackSer1[6]
+                if CRC.byte1==StackSer1[16] and CRC.byte0==StackSer1[17] then
+                    hserout2 ["MASTER: CRC ",dec StackSer1[16]," ",dec StackSer1[17]," ",dec CRC.byte1," ",dec CRC.byte0,13,10]
+                    Mod_NE="E"
+                    write 0,Mod_NE          'Mode_ID in eeprom controller
+                    write 1,Mod_ID0
+                    write 2,Mod_ID1
+                    write 3,Mod_ID2
+                    write 4,Mod_ID3
+                    write 10,TRADITIONAL_MASTER                
+                    Master_type=TRADITIONAL_MASTER
+                endif
+            endif                     
+        endif         
+    endif   
+return
+
+
+Nightrider_on_frontpanel:
+    for i=0 to 7
+        i2cdata0=255^(%00000001<<i)  
+        'gosub write_pcf8574
+        gosub write_leds    
+        pause 50
+        'i2cdata0=255
+        'gosub write_pcf8574
+        'pause 100
+    next i      
+    OutalertUpdate=1   'Set leds back in normal state
+return
+
+All_leds_on:
+    i2cdata0=0
+    gosub write_leds
+    led_st_red=LED_OFF
+    led_st_green=LED_OFF
+    gosub Set_status_led
+    pause 200
+    i2cdata0=255
+    gosub write_leds
+    led_st_red=LED_ON
+    led_st_green=LED_ON
+    gosub Set_status_led    
+return
+
+Set_led_init_button:
+    OutAlertUpdate=0
+    indicate=indicateInitButton
+    PowerSafe=0
+    z=out>>indicateInitButton
+    if z.bit0=1 then      'Output is ON
+        i2cdata0=~(out&(~OutAlert))
+        'gosub write_pcf8574
+        gosub write_leds         
+    else                  'Output is OFF
+        i2cdata0=~(out|OutAlert)
+        'gosub write_pcf8574
+        gosub write_leds
+    endif
+return
+
+check_inputs2:
+    if Mod_ID1=255 and Mod_ID2=255 and Mod_ID3=255 then   'only allow output change with init button for non initialised modules
+        if Butt1=0 then                       'Init button pressed
+            PowerSafe=0
+            Button1Pressed=1
+            if Button1Timer2>4800 and Button1Timer2<6000 and OutAlertCounter>0 then            'Button is pressed for 200 cycles to toggle output
+                'hserout2 ["Toggle Output ",dec indicateInitButton,13,10]
+                Button1Timer2=6000
+                z=%00000001<<indicateInitButton
+                out=out^z     'Set Output 
+                z=z&out
+                if z=0 then   'Output is OFF
+                    if indicateInitButton<8 then dimmer[indicateInitButton]=0
+                else          'Output is ON
+                    if indicateInitButton<8 then dimmer[indicateInitButton]=63
+                endif    
+                gosub write_output    
+            endif
+            led_st_red=LED_ON
+            led_st_green=LED_ON    
+            gosub Set_status_led             
+        else                                 'Init Button not pressed
+            if Button1Pressed=1 then           'Init button has been released
+                'hserout2 ["Timer2 ",dec Button1Timer2,13,10]
+                if Button1Timer2>96 and Button1Timer2<1600 then          'If button is released
+                    if OutAlertCounter=0 then                           'Was not yet in mode to toggle output with init button
+                        'hserout2 ["Enable Toggle Mode ",dec indicateInitButton,13,10]
+                        OutAlert=%00000001<<indicateInitButton
+                        OutAlertCounter=4500           
+                        gosub Set_led_init_button                         'During change of init output, update leds
+                    else
+                        indicateInitButton=indicateInitButton+1
+                        if indicateInitButton>7 then indicateInitButton=0
+                        'hserout2 ["Toggle Mode ",dec indicateInitButton,13,10]
+                        OutAlert=%00000001<<indicateInitButton
+                        OutAlertCounter=4500           
+                        gosub Set_led_init_button                         'During change of init output, update leds
+                    endif     
+                endif      
+                Button1Timer2=0
+            endif
+            led_st_red=LED_OFF
+            led_st_green=LED_OFF    
+            gosub Set_status_led             
+            Button1Pressed=0
+            Button1Timer=750
+        endif
+    endif  
+return
+
+'------------------------------------------------------------------------------
+' I2C subroutines
+'------------------------------------------------------------------------------
+
+Check_button_pressed:
+    if INTERRUPT_PIN=0 then  'one of the button's is pressed
+        hserout2 ["Button pressed",13,10]
+        'read i2c button pressed
+        gosub read_tca9539_data
+        if test_mode==YES then
+            'hserout2 ["Button pressed in test mode",13,10]
+            high RS485_mode              'send mode
+            hserout ["RC",0,0,0,0,"B",1,Butt1,0,0,0,0,0,0,0,13,10]
+            gosub Low_rs485_mode
+        endif
+    endif
+return
+
+'Set_status_led:
+'    'if hardware=8 then
+'    if led_st=0 then    'led must be ON
+'        tca9539_data.bit9=0
+'        tca9539_data.bit10=0 
+'        hserout2 ["Set status led A ",bin8 tca9539_data.byte1," ",bin8 tca9539_data.byte1,13,10]        
+'        gosub write_tca9539_data   
+'    else                'led must be OFF
+'         tca9539_data.bit9=1
+'        tca9539_data.bit10=1
+'        hserout2 ["Set status led B ",bin8 tca9539_data.byte1," ",bin8 tca9539_data.byte1,13,10]         
+'        gosub write_tca9539_data     
+'    endif
+'    'else
+'    '  LED_STATUS=led_st
+'    'endif    
+'return
+
+Set_status_led:
+    'if hardware=8 then
+        if led_st_red==LED_ON then
+            tca9539_data.bit9=0
+        else
+            tca9539_data.bit9=1
+        endif
+        if led_st_green==LED_ON then
+            tca9539_data.bit10=0
+        else
+            tca9539_data.bit10=1
+        endif
+        gosub write_tca9539_data
+    'else
+    '    LED_STATUS=led_st_red
+    'endif    
+return
+
+detect_i2c_chips:
+    gosub write_tca9539_config
+    if err=1 then
+        hserout2 ["No TCA9539",13,10]
+    else
+        hserout2 ["TCA9539_0 found",13,10]
+        'hardware=8  'New hardware with RJ45 connectors
+        gosub write_tca9539_data
+    endif
+    gosub read_M24C02_data
+    if err=1 then
+        hserout2 ["No M24C02",13,10]
+    else
+        hserout2 ["M24C02 found",13,10]
+    endif    
+    'i2cdata0=255
+    'gosub write_leds
+    'hier_led
+    'gosub read_tca9539_data  
+    'if hardware=3 then
+    '  input Button1
+    '  input Button2
+    'elseif hardware>3 and hardware<8 then
+    '  input Button1_2
+    '  input Button2_2 
+    'endif
+    'if hardware=8 then gosub read_tca9539_data    
+return
+
+write_leds:
+  'if hardware=8 then    'Gen 3 hw
+    'hier_led
+    'i2cdata0=~i2cdata0
+    tca9539_data.bit6=i2cdata0.bit0
+    tca9539_data.bit5=i2cdata0.bit1
+    tca9539_data.bit4=i2cdata0.bit2
+    tca9539_data.bit3=i2cdata0.bit3
+    tca9539_data.bit2=i2cdata0.bit4
+    tca9539_data.bit8=i2cdata0.bit5
+    tca9539_data.bit1=i2cdata0.bit6
+    tca9539_data.bit0=i2cdata0.bit7
+    'hserout2 ["Write leds ",bin8 i2cdata0," ",bin8 tca9539_data.byte1," ",bin8 tca9539_data.byte0,13,10]
+    gosub write_tca9539_data
+  'else
+  '  gosub write_pcf8574_data
+  'endif 
+return 
+
+write_tca9539_config:
+    hserout2 ["Write config chip 0 ",bin8 i2cdata0,13,10]
+    i2ccont=TCA9539_0_ADDRESS
+    i2cCommandCode=6              '6 and 7 are the config registers
+    'hier_led
+    i2cCommandData=%00000000      'All Outputs 
+    i2cCommandData1=%11000000     '2 inputs, the rest outputs 
+    gosub Set_parameters_I2C_write_tca9539 
+    gosub I2C_read_write
+    'hier_led
+    'hserout2 ["Write config chip 1",13,10]
+    'i2ccont=TCA9539_1_ADDRESS
+    'i2cCommandCode=7
+    'i2cCommandData=%00000000      'All outputs (0-7) 
+    'i2cCommandData1=%00000000     'All outputs (8-15)   
+    'gosub Set_parameters_I2C_write_tca9539 
+    'gosub I2C_read_write    
+return
+
+'write_pcf8574_data:
+'  i2ccont=PCF8574_ADDRESS
+'  i2cCommandData=i2cdata0
+'  gosub Set_parameters_I2C_write_pcf8574
+'  gosub I2C_read_write
+'return
+
+'write_pcf8574a_data:
+'  i2ccont=PCF8574A_ADDRESS
+'  i2cCommandData=i2cdata0
+'  gosub Set_parameters_I2C_write_pcf8574
+'  gosub I2C_read_write
+'return
+
+write_tca9539_data:
+    if tca9539_data<>tca9539_data_old then
+        i2ccont=TCA9539_0_ADDRESS
+        i2cCommandCode=2              '2 and 3 are the output port registers
+        i2cCommandData=tca9539_data.byte0      'for output 0-7
+        i2cCommandData1=tca9539_data.byte1     'for output 8-15
+        'hserout2 ["Write ",bin8 i2cCommandData1," ",bin8 i2cCommandData,13,10]
+        gosub Set_parameters_I2C_write_tca9539 
+        gosub I2C_read_write
+        tca9539_data_old=tca9539_data
+    endif
+    'hier_led   
+return
+
+read_tca9539_data:
+    i2ccont=TCA9539_0_ADDRESS
+    i2cCommandCode=0              '0 and 1 are the input port registers
+    gosub Set_parameters_I2C_read_tca9539
+    gosub I2C_read_write
+    'hserout2 ["I2C input data(0) ",bin8 i2cdata[1]," ",bin8 i2cdata[0]," Adrr: ",bin8 i2ccont,13,10]
+    x=i2cdata[1]
+    'hier_led
+    butt1=~x.bit6 
+return
+
+read_M24C02_data:
+    i2ccont=M24C02_ADDRESS
+    i2cCommandData=1    'address (only 1 address byte)
+    gosub Set_parameters_I2C_read_MC24C02
+    gosub I2C_read_write
+    hserout2 ["EEPROM read ",dec i2cdata[0]," ",dec i2cdata[1]," Adrr: ",bin8 i2ccont,13,10]    
+return
+
+Set_parameters_I2C_read_MC24C02:
+    I2cStep[0]=SENT_START
+    I2cStep[1]=CHECK_INTERRUPT
+
+    I2cStep[2]=SENT_ADDRESS_W
+    I2cStep[3]=CHECK_INTERRUPT
+    I2cStep[4]=CHECK_ACK
+    
+    I2cStep[5]=SENT_COMMANDDATA         'Adress Byte
+    I2cStep[6]=CHECK_INTERRUPT
+    I2cStep[7]=CHECK_ACK 
+    
+    I2cStep[8]=REPEATED_START
+    I2cStep[9]=CHECK_INTERRUPT
+    I2cStep[10]=SENT_ADDRESS_R
+    I2cStep[11]=CHECK_INTERRUPT
+    I2cStep[12]=CHECK_ACK
+    
+    I2cStep[13]=ENABLE_RECEIVING
+    I2cStep[14]=CHECK_INTERRUPT 
+    I2cStep[15]=RECEIVE_DATA            'Receive Bytes
+    I2cStep[16]=SENT_NACK
+    I2cStep[17]=CHECK_INTERRUPT     
+    
+    I2cStep[18]=SENT_STOP
+    I2cStep[19]=CHECK_INTERRUPT             
+    I2cStep[20]=PROCESS_DONE
+return
+
+'Set_parameters_I2C_write_pcf8574:   'Write  
+'  I2cStep[0]=SENT_START
+'  I2cStep[1]=CHECK_INTERRUPT
+'  I2cStep[2]=SENT_ADDRESS_W
+'  I2cStep[3]=CHECK_INTERRUPT
+'  I2cStep[4]=CHECK_ACK
+'  I2cStep[5]=SENT_COMMANDDATA
+'  I2cStep[6]=CHECK_INTERRUPT
+'  I2cStep[7]=CHECK_ACK   
+'  I2cStep[8]=SENT_STOP
+'  I2cStep[9]=CHECK_INTERRUPT
+'  I2cStep[10]=PROCESS_DONE  
+'return
+
+Set_parameters_I2C_write_tca9539:   'Write  
+    I2cStep[0]=SENT_START
+    I2cStep[1]=CHECK_INTERRUPT
+    I2cStep[2]=SENT_ADDRESS_W
+    I2cStep[3]=CHECK_INTERRUPT
+    I2cStep[4]=CHECK_ACK
+    I2cStep[5]=SENT_COMMANDCODE
+    I2cStep[6]=CHECK_INTERRUPT
+    I2cStep[7]=CHECK_ACK
+    I2cStep[8]=SENT_COMMANDDATA
+    I2cStep[9]=CHECK_INTERRUPT
+    I2cStep[10]=CHECK_ACK
+    I2cStep[11]=SENT_COMMANDDATA1
+    I2cStep[12]=CHECK_INTERRUPT
+    I2cStep[13]=CHECK_ACK  
+    I2cStep[14]=SENT_STOP
+    I2cStep[15]=CHECK_INTERRUPT
+    I2cStep[16]=PROCESS_DONE  
+return
+
+Set_parameters_I2C_read_tca9539:    'Read 2 bytes from TCA9539
+    I2cStep[0]=SENT_START
+    I2cStep[1]=CHECK_INTERRUPT
+    I2cStep[2]=SENT_ADDRESS_W
+    I2cStep[3]=CHECK_INTERRUPT
+    I2cStep[4]=CHECK_ACK
+    I2cStep[5]=SENT_COMMANDCODE
+    I2cStep[6]=CHECK_INTERRUPT
+    I2cStep[7]=CHECK_ACK   
+    I2cStep[8]=REPEATED_START
+    I2cStep[9]=CHECK_INTERRUPT
+    I2cStep[10]=SENT_ADDRESS_R
+    I2cStep[11]=CHECK_INTERRUPT
+    I2cStep[12]=CHECK_ACK
+    I2cStep[13]=ENABLE_RECEIVING
+    I2cStep[14]=CHECK_INTERRUPT
+    I2cStep[15]=RECEIVE_DATA          'Byte0 received
+    I2cStep[16]=SENT_ACK
+    I2cStep[17]=CHECK_INTERRUPT
+    I2cStep[18]=ENABLE_RECEIVING
+    I2cStep[19]=CHECK_INTERRUPT
+    I2cStep[20]=RECEIVE_DATA          'Byte1 received
+    I2cStep[21]=SENT_NACK
+    I2cStep[22]=CHECK_INTERRUPT      
+    I2cStep[23]=SENT_STOP
+    I2cStep[24]=CHECK_INTERRUPT             
+    I2cStep[25]=PROCESS_DONE
+return
+
+I2C_Instruction:
+    instruction_done=0      'instruction isn't executed yet
+    if I2cStep[Fase]=CHECK_ACK then
+        gosub check_i2c_acknowledge
+        if i2cAck=1 then    'Ack received
+            instruction_done=1       
+        endif
+    elseif I2cStep[Fase]=SENT_START then
+        i2cModeOld=i2cMode      'Check_interrupt is needed as a next step
+        SSPCON2.0=1             'Sent start
+        instruction_done=1      'instruction executed
+    elseif I2cStep[Fase]=SENT_STOP then
+        i2cModeOld=i2cMode      'Check_interrupt is needed as a next step
+        SSPCON2.2=1             'Sent stop
+        instruction_done=1      'instruction executed    
+    elseif I2cStep[Fase]=CHECK_INTERRUPT then
+        if i2cMode<>i2cModeOld then 'interrupt happened
+            instruction_done=1        'instruction executed
+        endif    
+    elseif I2cStep[Fase]=SENT_ADDRESS_W then
+        i2cModeOld=i2cMode
+        i2ccont.bit0=0          'WRITE
+        SSPBUF=i2ccont
+        instruction_done=1      'instruction executed
+    elseif I2cStep[Fase]=SENT_ADDRESS_R then
+        i2cModeOld=i2cMode
+        i2ccont.bit0=1          'READ
+        SSPBUF=i2ccont
+        instruction_done=1      'instruction executed    
+    elseif I2cStep[Fase]=SENT_COMMANDCODE then
+        i2cModeOld=i2cMode
+        SSPBUF=i2cCommandCode
+        instruction_done=1      'instruction executed 
+    elseif I2cStep[Fase]=SENT_COMMANDDATA then
+        i2cModeOld=i2cMode
+        SSPBUF=i2cCommandData
+        instruction_done=1      'instruction executed
+    elseif I2cStep[Fase]=SENT_COMMANDDATA1 then
+        i2cModeOld=i2cMode
+        SSPBUF=i2cCommandData1
+        instruction_done=1      'instruction executed 
+    elseif I2cStep[Fase]=SENT_COMMANDDATA2 then
+        i2cModeOld=i2cMode
+        SSPBUF=i2cCommandData2
+        instruction_done=1      'instruction executed 
+    elseif I2cStep[Fase]=SENT_COMMANDDATA3 then
+        i2cModeOld=i2cMode
+        SSPBUF=i2cCommandData3
+        instruction_done=1      'instruction executed            
+    elseif I2cStep[Fase]=ENABLE_RECEIVING then 
+        i2cModeOld=i2cMode      'Check_interrupt is needed as a next step
+        SSPCON2.3=1             'enable receiving
+        instruction_done=1      'instruction executed
+    elseif I2cStep[Fase]=RECEIVE_DATA then
+        if SSPSTAT.0=1 then     'Buffer full 
+            i2cdata[ByteNr]=SSPBUF
+            if ByteNr<(MAXI2CBYTES-1) then ByteNr=ByteNr+1
+            instruction_done=1    'instruction executed         
+        endif
+    elseif I2cStep[Fase]=SENT_ACK then
+        i2cModeOld=i2cMode      'Check_interrupt is needed as a next step
+        SSPCON2.5=0             'ACK, not NACK
+        SSPCON2.4=1             'Sent Ack
+        instruction_done=1      'instruction executed   
+    elseif I2cStep[Fase]=SENT_NACK then
+        i2cModeOld=i2cMode      'Check_interrupt is needed as a next step
+        SSPCON2.5=1             'NACK, not ACK          
+        SSPCON2.4=1             'Sent NAck
+        instruction_done=1      'instruction executed                 
+    elseif I2cStep[Fase]=REPEATED_START then   
+        i2cModeOld=i2cMode      'Check_interrupt is needed as a next step
+        SSPCON2.1=1             'Repeated start
+        instruction_done=1      'instruction executed      
+    elseif I2cStep[Fase]=PROCESS_DONE then
+        i2cMode=0
+        T0CON.7=0               'stop timer1
+        err=0
+        i2cerror=0    
+    endif
+    if instruction_done=1 then Fase=Fase+1
+return
+
+I2C_read_write:
+    i2cint=1
+    i2cmode=1
+    TMR0L=0
+    TMR0H=0  
+    T0CON.7=1  'timer 0 enabled     
+    Fase=0
+    ByteNr=0   
+    while (i2cMode>0)
+        i2cInt=0
+        pauseus 50
+        gosub I2C_Instruction
+        'hserout2 ["Fase ",dec Fase,13,10]  
+    wend
+return
+
+check_i2c_acknowledge:
+    if SSPCON2.6=0 then 'Acknowledge received from slave
+        i2cAck=1 'Acknowledge received
+        SSPCON2.6=1
+    else
+        i2cAck=0
+    endif 
+return
+
+Check_i2c_error:
+ 
+return
+   
+End
