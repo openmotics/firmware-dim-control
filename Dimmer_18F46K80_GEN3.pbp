@@ -29,9 +29,9 @@
 
 DEFINE          OSC                 40
 
-version         con                 6
-firmware        con                 0
-built           con                 15
+VERSION         con                 6
+FIRMWARE        con                 0
+BUILT           con                 16
 
 hardware        con                 4
 
@@ -1317,6 +1317,24 @@ rs485_send:
     gosub low_rs485_mode
 return
 
+rs485_send_SI:      'Send message to the Master that the ID can be stored in the Eeprom of the Master  
+    rs485_length=6              'Payload length
+    A_rs485_data[0]=Mod_ID0     'Payload data
+    A_rs485_data[1]=Mod_ID1
+    A_rs485_data[2]=Mod_ID2
+    A_rs485_data[3]=Mod_ID3
+    A_rs485_data[4]="S"
+    A_rs485_data[5]="I"
+    A_rs485_data[6]=0
+    A_rs485_data[7]=0
+    gosub Calc_CRC16            'Calculate CRC
+    pauseus 1500
+    hserout2 ["send SI message ",dec Mod_ID0," ",dec Mod_ID1," ",dec Mod_ID2," ",dec Mod_ID3," CRC=",dec CRC.byte1," ",dec CRC.byte0,13,10]
+    high RS485_mode              'send mode
+    hserout ["RC",A_rs485_data[0],A_rs485_data[1],A_rs485_data[2],A_rs485_data[3],A_rs485_data[4],A_rs485_data[5],A_rs485_data[6],A_rs485_data[7],"C",CRC.byte1,CRC.Byte0,13,10]
+    gosub Low_rs485_mode
+return
+
 Check_LedAction:
     if LedAction=1 and mode="L" then
         led_st_red=LED_OFF
@@ -1377,7 +1395,8 @@ activate_device:
                     write 10,CORE
                     Master_type=CORE
                     led_st_red=LED_OFF
-                    led_st_green=LED_ON 
+                    led_st_green=LED_ON
+                    gosub rs485_send_SI 
                     gosub Set_status_led                        
                 endif
             elseif StackSer1[15]="C" then   'Checksum is included in the message (Traditional Master), otherwise ignore
@@ -1394,6 +1413,8 @@ activate_device:
                     Master_type=TRADITIONAL_MASTER
                 endif
             endif                     
+        else
+            gosub rs485_send_SI
         endif         
     endif   
 return
